@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$false)]
-    [switch]$undo
+    [switch]$uninstall
 )
 $SCCMServers = @(
     "wmcsccm02.wcmc.com",
@@ -11,6 +11,7 @@ $SCCMServers = @(
 $ScriptRoot = "c:\temp\wu-enable"
 $ScriptName = Split-Path -Path $PSCommandPath -Leaf
 $ScriptPath = "$ScriptRoot\$ScriptName"
+$isSystemUser = ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name -eq "NT AUTHORITY\SYSTEM")
 function AdminCheck {
     if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
         # Check if the script is running in Visual Studio Code
@@ -33,7 +34,11 @@ function AdminCheck {
         exit
     }
 }
-    function ManagePowerShellInstallation {
+    function ManagePowerShellInstallation($uninstall) {
+        if ($uninstall) {
+            Write-Host "uninstall: PowerShell 7 will not be managed or updated."
+            return
+        }
         # Check if PowerShell 7 is installed
         if (-not (Test-Path "C:\Program Files\PowerShell\7\pwsh.exe")) {
             # PowerShell 7 is not installed, so install it
@@ -50,10 +55,12 @@ function AdminCheck {
         } else {
             # PowerShell 7 is installed, so check if it needs to be updated
             # Get the version of PowerShell 7
-            $currentVersion = & "C:\Program Files\PowerShell\7\pwsh.exe" -Command { $PSVersionTable.PSVersion }
+            $currentVersion = (Get-Command "C:\Program Files\PowerShell\7\pwsh.exe").Version
+            Write-Host "Current version of PowerShell 7: $currentVersion"
             # Get the latest release from the GitHub API
             $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/PowerShell/PowerShell/releases/latest"
             $latestVersion = [Version]$latestRelease.tag_name.Replace('v', '')
+            Write-Host "Latest version of PowerShell 7: $latestVersion"
             if ($currentVersion -lt $latestVersion) {
                 # PowerShell 7 is out of date, so update it
                 Write-Host "PowerShell 7 is out of date. Updating..."
@@ -76,17 +83,15 @@ function AdminCheck {
         }
     }
 
-function ScheduleScript ($undo) {
+function ScheduleScript ($uninstall) {
     # Schedule this script to run every 15 minutes and on startup
     $TaskName = "RunWUEnableScript"
     if (Test-Path "C:\Program Files\PowerShell\7\pwsh.exe") {
         $powershellPath = "C:\Program Files\PowerShell\7\pwsh.exe"
-        $powerShellVersion = "7"
         } else {
         $powershellPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        $powerShellVersion = "5.1"
         }
-    if (-not $undo) {
+    if (-not $uninstall) {
         # Check if the task already exists
         if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
             $nextMinute = (Get-Date).AddMinutes(1)
@@ -105,18 +110,21 @@ function ScheduleScript ($undo) {
         # Code to unschedule the script
         if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
             Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+            Write-Host "uninstall: Scheduled task has been removed."
+        } else {
+            Write-Host "uninstall: Scheduled task does not exist. No action taken."
         }
     }
 }
 
-function BlockSCCM ($undo) {
+function BlockSCCM ($uninstall) {
     $SCCMClientUninstall = "C:\Windows\ccmsetup\ccmsetup.exe"
     $hostsPath = "$env:windir\System32\drivers\etc\hosts"
     $hostsContent = Get-Content -Path $hostsPath
     $hostsEntries = $SCCMServers | ForEach-Object {
         "127.0.0.1 $_"
         }
-        if (-not $undo) {
+        if (-not $uninstall) {
     if (Test-Path $SCCMClientUninstall) {
         Invoke-Expression "$SCCMClientUninstall /uninstall /quiet /norestart"
         Write-Host "SCCM Client has been uninstalled silently."
@@ -141,14 +149,14 @@ function BlockSCCM ($undo) {
     }
     if ((Get-Content -Path $hostsPath) -ne $hostsContent) {
         $hostsContent | Set-Content -Path $hostsPath
-        Write-Host "SCCM servers have been unblocked in the HOSTS file."
+        Write-Host "uninstall: SCCM servers have been unblocked in the HOSTS file."
         }
     }
 }
-function ResetGroupPolicyObjects ($undo){
-    if (-not $undo) {
+function ResetGroupPolicyObjects ($uninstall){
+    if (-not $uninstall) {
     try {
-        if (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft") { Remove-Item "HKLM:\SOFTWARE\Policies\Microsoft" -Recurse -Force }
+        if (Test-Path "HKLM:\SOFTWARE\Policies\Microsoft" -and $isSystemUser) { Remove-Item "HKLM:\SOFTWARE\Policies\Microsoft" -Recurse -Force } else { Write-Host "HKLM:\SOFTWARE\Policies\Microsoft cannot be removed by non-SYSTEM user." }
         if (Test-Path "$env:SystemRoot\System32\GroupPolicyUsers") { Remove-Item "$env:SystemRoot\System32\GroupPolicyUsers" -Recurse -Force }
         if (Test-Path "$env:SystemRoot\System32\GroupPolicy") { Remove-Item "$env:SystemRoot\System32\GroupPolicy" -Recurse -Force }
         if (Test-Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies") { Remove-Item "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies" -Recurse -Force }
@@ -159,13 +167,12 @@ function ResetGroupPolicyObjects ($undo){
         Write-Host "Error resetting Group Policy Objects: $_"
     }
     } else {
-        Write-Host "Group Policy Objects will not be reset."
+        Write-Host "uninstall: Group Policy Objects will not be reset."
     }
 }
-function EnableWindowsUpdate ($undo) {
-    if (-not $undo) {
+function EnableWindowsUpdate ($uninstall) {
     $registryPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
-
+    if (-not $uninstall) {
     if (-Not (Test-Path $registryPath)) {
         New-Item -Path $registryPath -Force
     }
@@ -175,12 +182,16 @@ function EnableWindowsUpdate ($undo) {
 } else {
     if (Test-Path $registryPath) {
         Remove-Item -Path $registryPath -Recurse -Force
-        Write-Host "Windows Update settings have been reset."
+        Write-Host "uninstall: Windows Update settings have been reset."
     }
     }
 }
-function DisableGroupPolicyService($undo) {
-    if (-not $undo) {
+function DisableGroupPolicyService($uninstall) {
+    if (-not $isSystemUser) {
+        Write-Host "warning: Group Policy Client Service can only be altered by SYSTEM. Run as Scheduled Task to disable"
+        return
+    }
+    if (-not $uninstall) {
     Set-Service -Name gpsvc -StartupType Disabled
     Stop-Service -Name gpsvc -Force
     Write-Host "Group Policy Client Service has been disabled and stopped."
@@ -189,24 +200,31 @@ function DisableGroupPolicyService($undo) {
     if ((Get-Service -Name gpsvc).StartType -eq 'Disabled') {
         Set-Service -Name gpsvc -StartupType Automatic
         Start-Service -Name gpsvc
-        Write-Host "Group Policy Client Service has been enabled and started."
+        Write-Host "uninstall: Group Policy Client Service has been enabled and started."
     }
 }
 }
-function ForceGroupPolicyUpdate($undo) {
-if (-not $undo) {
-    Write-Host "Group Policy update will not be forced."
-} else { 
-    Invoke-Expression "gpupdate /force"
-    Write-Host "Group Policy update has been started in the background."
-}
+function ForceGroupPolicyUpdate($uninstall) {
+    # Check if the system is part of a domain
+    $computerSystem = Get-WmiObject -Class Win32_ComputerSystem
+    if (-not $computerSystem.PartOfDomain) {
+        Write-Host "warning: This system is not part of a domain. Group Policy update cannot be forced."
+        return
+    }
+
+    if (-not $uninstall) {
+        Write-Host "Group Policy update will not be forced."
+    } else { 
+        Invoke-Expression "gpupdate /force"
+        Write-Host "uninstall: Group Policy update has been forced."
+    }
 }
     # Main logic
     AdminCheck
-    ManagePowerShellInstallation
-    ScheduleScript($undo)
-    BlockSCCM($undo)
-    ResetGroupPolicyObjects($undo)
-    EnableWindowsUpdate($undo)
-    DisableGroupPolicyService($undo)
-    ForceGroupPolicyUpdate($undo)
+    ManagePowerShellInstallation($uninstall)
+    ScheduleScript($uninstall)
+    BlockSCCM($uninstall)
+    ResetGroupPolicyObjects($uninstall)
+    EnableWindowsUpdate($uninstall)
+    DisableGroupPolicyService($uninstall)
+    ForceGroupPolicyUpdate($uninstall)
