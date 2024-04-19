@@ -187,22 +187,36 @@ function EnableWindowsUpdate ($uninstall) {
     }
 }
 function DisableGroupPolicyService($uninstall) {
+    $TaskName = "ChangeGroupPolicyClientService"
     if (-not $isSystemUser) {
-        Write-Host "warning: Group Policy Client Service can only be altered by SYSTEM. Run as Scheduled Task to disable"
+        Write-Host "warning: Group Policy Client Service can only be altered by SYSTEM. Creating a Scheduled Task to perform the action"
+        $nextMinute = (Get-Date).AddMinutes(1)
+        $trigger = New-ScheduledTaskTrigger -Once -At $nextMinute
+        if (-not $uninstall) {
+            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-Command {Set-Service -Name gpsvc -StartupType Disabled; Stop-Service -Name gpsvc -Force}"
+            Write-Host "Group Policy Client Service will be disabled and stopped."
+        } else {
+            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-Command {Set-Service -Name gpsvc -StartupType Automatic; Start-Service -Name gpsvc}"
+            Write-Host "uninstall: Group Policy Client Service will be enabled and started."
+        }
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -StartWhenAvailable -DeleteExpiredTaskAfter 00:00:01
+        $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
+        Register-ScheduledTask -TaskName $TaskName -TaskPath "\" -InputObject $task
         return
     }
     if (-not $uninstall) {
-    Set-Service -Name gpsvc -StartupType Disabled
-    Stop-Service -Name gpsvc -Force
-    Write-Host "Group Policy Client Service has been disabled and stopped."
-} else {
-    # Code to enable Group Policy Client Service
-    if ((Get-Service -Name gpsvc).StartType -eq 'Disabled') {
-        Set-Service -Name gpsvc -StartupType Automatic
-        Start-Service -Name gpsvc
-        Write-Host "uninstall: Group Policy Client Service has been enabled and started."
+        Set-Service -Name gpsvc -StartupType Disabled
+        Stop-Service -Name gpsvc -Force
+        Write-Host "You are SYSTEM. Group Policy Client Service has been disabled and stopped."
+    } else {
+        # Code to enable Group Policy Client Service
+        if ((Get-Service -Name gpsvc).StartType -eq 'Disabled') {
+            Set-Service -Name gpsvc -StartupType Automatic
+            Start-Service -Name gpsvc
+            Write-Host "uninstall: You are SYSTEM. Group Policy Client Service has been enabled and started."
+        }
     }
-}
 }
 function ForceGroupPolicyUpdate($uninstall) {
     # Check if the system is part of a domain
