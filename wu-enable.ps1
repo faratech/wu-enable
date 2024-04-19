@@ -188,10 +188,14 @@ function EnableWindowsUpdate ($uninstall) {
 }
 function DisableGroupPolicyService($uninstall) {
     $TaskName = "ChangeGroupPolicyClientService"
+    $nextMinute = (Get-Date).AddMinutes(1).ToString("s")
+    $nextTwoMinutes = (Get-Date).AddMinutes(2).ToString("s")
+    Write-Host "Next minute: $nextMinute Next two minutes: $nextTwoMinutes"
+    $trigger = "New-ScheduledTaskTrigger -At $nextMinute -EndbOundary $nextTwoMinutes -Once"
+    Write-Host "Trigger: $trigger"
     if (-not $isSystemUser) {
         Write-Host "warning: Group Policy Client Service can only be altered by SYSTEM. Creating a Scheduled Task to perform the action"
-        $nextMinute = (Get-Date).AddMinutes(1)
-        $trigger = New-ScheduledTaskTrigger -Once -At $nextMinute
+        Write-Host "Scheduled task will run at $nextMinute"
         if (-not $uninstall) {
             $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-Command {Set-Service -Name gpsvc -StartupType Disabled; Stop-Service -Name gpsvc -Force}"
             Write-Host "Group Policy Client Service will be disabled and stopped."
@@ -202,6 +206,10 @@ function DisableGroupPolicyService($uninstall) {
         $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -StartWhenAvailable -DeleteExpiredTaskAfter 00:00:01
         $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
+        Write-Host "Action: $action"
+Write-Host "Trigger: $trigger"
+Write-Host "Principal: $principal"
+Write-Host "Settings: $settings"
         Register-ScheduledTask -TaskName $TaskName -TaskPath "\" -InputObject $task
         return
     }
